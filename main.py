@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Float, Boolean, create_engine
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import relationship, Session, declarative_base, sessionmaker
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, timedelta
@@ -317,8 +317,15 @@ app = FastAPI()
 
 @app.on_event("startup")
 def startup():
-    # Create tables if they don't exist.
-    Base.metadata.create_all(bind=engine, checkfirst=True)
+    try:
+        # Create tables only if they do not exist; checkfirst=True should help,
+        # but we wrap in try/except to catch any "already exists" errors.
+        Base.metadata.create_all(bind=engine, checkfirst=True)
+    except Exception as e:
+        if "already exists" in str(e):
+            print("Tables already exist. Continuing startup.")
+        else:
+            raise e
     if not os.path.exists("uploads"):
         os.makedirs("uploads")
     db = SessionLocal()
@@ -338,6 +345,9 @@ def startup():
     except IntegrityError as e:
         db.rollback()
         print("Admin seeding skipped:", e)
+    except Exception as e:
+        db.rollback()
+        print("Admin seeding error:", e)
     finally:
         db.close()
 
