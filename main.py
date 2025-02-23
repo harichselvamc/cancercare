@@ -20,12 +20,13 @@ Base = declarative_base()
 # --------------------
 # JWT & Password Setup
 # --------------------
-SECRET_KEY = "your_secret_key"  # change this in production!
+SECRET_KEY = "your_secret_key"  # CHANGE THIS FOR PRODUCTION!
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="admin/token")  # default for protected endpoints
+# Default OAuth2 scheme set to admin login endpoint; others have their own.
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="admin/token")
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
@@ -33,7 +34,7 @@ def verify_password(plain_password, hashed_password):
 def get_password_hash(password):
     return pwd_context.hash(password)
 
-def create_access_token(data: dict, expires_delta: timedelta = None):
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta if expires_delta else timedelta(minutes=15))
     to_encode.update({"exp": expire})
@@ -42,7 +43,6 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
 # --------------------
 # Database Models
 # --------------------
-# Main user table (all users: patient, doctor, caregiver, admin)
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
@@ -53,12 +53,10 @@ class User(Base):
     phone = Column(String)
     guardian_phone = Column(String, nullable=True)
     role = Column(String)  # "patient", "doctor", "caregiver", "admin"
-    # Relationship to profile tables (one-to-one)
+    cancer_info = relationship("CancerInfo", back_populates="user", uselist=False)
     patient_profile = relationship("PatientProfile", back_populates="user", uselist=False)
     doctor_profile = relationship("DoctorProfile", back_populates="user", uselist=False)
     caregiver_profile = relationship("CaregiverProfile", back_populates="user", uselist=False)
-    # Optional: cancer_info for patients (if needed)
-    cancer_info = relationship("CancerInfo", back_populates="user", uselist=False)
 
 class CancerInfo(Base):
     __tablename__ = "cancer_info"
@@ -94,14 +92,14 @@ class MedicalRecord(Base):
     description = Column(String)
     upload_time = Column(DateTime, default=datetime.utcnow)
 
-# Many-to-many linking table for doctor–patient associations (for doctor dashboard)
+# Many-to-many linking table for doctor–patient relationships
 class DoctorPatient(Base):
     __tablename__ = "doctor_patients"
     id = Column(Integer, primary_key=True, index=True)
     doctor_id = Column(Integer, ForeignKey("users.id"))
     patient_id = Column(Integer, ForeignKey("users.id"))
 
-# New profile tables for additional details
+# Profile tables for additional details
 class PatientProfile(Base):
     __tablename__ = "patient_profiles"
     id = Column(Integer, primary_key=True, index=True)
@@ -140,7 +138,6 @@ class CaregiverProfile(Base):
 # --------------------
 # Pydantic Schemas
 # --------------------
-# For User (admin creation only via login)
 class UserOut(BaseModel):
     id: int
     name: str
@@ -150,7 +147,8 @@ class UserOut(BaseModel):
     guardian_phone: Optional[str] = None
     role: str
     class Config:
-        orm_mode = True
+         from_attributes = True
+
 
 # Schemas for profile creation (admin endpoints)
 class PatientProfileCreate(BaseModel):
@@ -176,7 +174,7 @@ class CaregiverProfileCreate(BaseModel):
     experience: int
     price_per_day: float
 
-# Combined creation schema for patients (admin creates patient with profile)
+# Combined creation schemas for admin
 class PatientCreate(BaseModel):
     name: str
     email: EmailStr
@@ -204,7 +202,6 @@ class CaregiverCreate(BaseModel):
     guardian_phone: Optional[str] = None
     profile: CaregiverProfileCreate
 
-# Update schema for users (admin update)
 class UserUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
@@ -214,7 +211,6 @@ class UserUpdate(BaseModel):
     guardian_phone: Optional[str] = None
     role: Optional[str] = None
 
-# (Other schemas like CancerInfo, Reminder, Todo, MedicalRecord remain as before)
 class CancerInfoCreate(BaseModel):
     cancer_type: str
     stage: str
@@ -227,7 +223,8 @@ class CancerInfoOut(BaseModel):
     treatment_plan: str
     estimated_cost: float
     class Config:
-        orm_mode = True
+         from_attributes = True
+
 
 class ReminderCreate(BaseModel):
     title: str
@@ -240,7 +237,8 @@ class ReminderOut(BaseModel):
     description: str
     reminder_time: datetime
     class Config:
-        orm_mode = True
+         from_attributes = True
+
 
 class TodoCreate(BaseModel):
     task: str
@@ -250,7 +248,8 @@ class TodoOut(BaseModel):
     task: str
     completed: bool
     class Config:
-        orm_mode = True
+          from_attributes = True
+
 
 class MedicalRecordOut(BaseModel):
     id: int
@@ -260,7 +259,8 @@ class MedicalRecordOut(BaseModel):
     description: str
     upload_time: datetime
     class Config:
-        orm_mode = True
+          from_attributes = True
+
 
 # --------------------
 # Dependency: DB session
@@ -321,6 +321,7 @@ def require_role(role: str):
 # FastAPI App Initialization
 # --------------------
 app = FastAPI()
+
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
@@ -346,31 +347,10 @@ def startup():
     finally:
         db.close()
 
-@app.on_event("startup")
-def startup():
-    Base.metadata.create_all(bind=engine)
-    if not os.path.exists("uploads"):
-        os.makedirs("uploads")
-    # OPTIONAL: Seed admin if not exists
-    db = SessionLocal()
-    admin = get_user_by_email(db, "admin@admin.com")
-    if not admin:
-         admin = User(
-             name="admin",
-             email="admin@admin.com",
-             hashed_password=get_password_hash("admin"),
-             age=30,
-             phone="0000000000",
-             role="admin"
-         )
-         db.add(admin)
-         db.commit()
-    db.close()
-
 # --------------------
 # Login Endpoints
 # --------------------
-# Admin login (using email & password)
+# Admin login
 @app.post("/admin/token")
 def admin_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = authenticate_user(db, form_data.username, form_data.password)
@@ -407,7 +387,7 @@ def caregiver_login(caregiver_id: int, name: str, db: Session = Depends(get_db))
     return {"access_token": token, "token_type": "bearer"}
 
 # --------------------
-# Common Endpoints (for patients, doctors, etc.)
+# Common Endpoints
 # --------------------
 @app.post("/cancer-info", response_model=CancerInfoOut)
 def add_cancer_info(info: CancerInfoCreate, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
@@ -425,8 +405,8 @@ def add_cancer_info(info: CancerInfoCreate, current_user: User = Depends(get_cur
     db.refresh(cancer_info)
     return cancer_info
 
-# (Other endpoints for reminders, todos, medical records remain as before)
-# For brevity, not repeating unchanged endpoints here...
+# (Other endpoints for reminders, todos, and medical records are assumed to be similar to previous implementations)
+# For brevity, they are not repeated here.
 
 # --------------------
 # Doctor Dashboard Endpoints
@@ -471,7 +451,6 @@ def admin_get_patients(current_user: User = Depends(require_role("admin")), db: 
     result = []
     for p in patients:
          profile = p.patient_profile.__dict__ if p.patient_profile else {}
-         # Remove SQLAlchemy internal keys
          profile.pop("_sa_instance_state", None)
          result.append({
              "id": p.id,
@@ -625,11 +604,7 @@ def admin_delete_caregiver(caregiver_id: int, current_user: User = Depends(requi
     db.commit()
     return {"detail": "Caregiver deleted"}
 
-# --------------------
-# (Other endpoints such as reminders, todos, medical records, etc. remain unchanged)
-# --------------------
 
-# Uncomment below to run via: uvicorn main:app --reload
 # if __name__ == "__main__":
 #     import uvicorn
 #     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
