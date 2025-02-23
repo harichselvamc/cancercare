@@ -6,7 +6,7 @@ from pydantic import BaseModel, EmailStr
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from typing import List
+from typing import List, Optional
 import os
 
 # --------------------
@@ -55,7 +55,7 @@ class User(Base):
     age = Column(Integer)
     phone = Column(String)
     guardian_phone = Column(String, nullable=True)
-    role = Column(String)  # "patient", "caregiver", "doctor"
+    role = Column(String)  # valid roles: "patient", "caregiver", "doctor", "admin"
     # One-to-one relationship (if the patient provides cancer info)
     cancer_info = relationship("CancerInfo", back_populates="user", uselist=False)
 
@@ -102,10 +102,8 @@ class UserCreate(BaseModel):
     password: str
     age: int
     phone: str
-    guardian_phone: str = None
-    role: str  # should be one of "patient", "caregiver", "doctor"
-
-from typing import Optional
+    guardian_phone: Optional[str] = None
+    role: str  # one of "patient", "caregiver", "doctor", "admin"
 
 class UserOut(BaseModel):
     id: int
@@ -215,8 +213,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 def get_current_active_user(current_user: User = Depends(get_current_user)):
     return current_user
 
+# Modified require_role to allow admin access to all endpoints
 def require_role(role: str):
     def role_checker(current_user: User = Depends(get_current_active_user)):
+         # Admin can perform all actions
+         if current_user.role == "admin":
+              return current_user
          if current_user.role != role:
               raise HTTPException(status_code=403, detail="Not enough permissions")
          return current_user
@@ -272,11 +274,11 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
-# Cancer Related Information (only patients)
+# Cancer Related Information (for patients or admin)
 @app.post("/cancer-info", response_model=CancerInfoOut)
 def add_cancer_info(info: CancerInfoCreate, current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    if current_user.role != "patient":
-         raise HTTPException(status_code=403, detail="Only patients can add cancer info")
+    if current_user.role not in ["patient", "admin"]:
+         raise HTTPException(status_code=403, detail="Only patients or admin can add cancer info")
     cancer_info = CancerInfo(
          user_id=current_user.id,
          cancer_type=info.cancer_type,
@@ -353,7 +355,6 @@ def update_todo(todo_id: int, todo: TodoCreate, current_user: User = Depends(get
     if not db_todo:
          raise HTTPException(status_code=404, detail="Todo not found")
     db_todo.task = todo.task
-    # For simplicity, setting completed to False on update; modify as needed.
     db.commit()
     db.refresh(db_todo)
     return db_todo
@@ -403,7 +404,7 @@ def get_medical_records(current_user: User = Depends(get_current_active_user), d
     # Patients see their records; doctors see records they uploaded.
     if current_user.role == "patient":
          records = db.query(MedicalRecord).filter(MedicalRecord.patient_id == current_user.id).all()
-    elif current_user.role == "doctor":
+    elif current_user.role in ["doctor", "admin"]:
          records = db.query(MedicalRecord).filter(MedicalRecord.doctor_id == current_user.id).all()
     else:
          raise HTTPException(status_code=403, detail="Not enough permissions")
