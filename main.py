@@ -321,6 +321,30 @@ def require_role(role: str):
 # FastAPI App Initialization
 # --------------------
 app = FastAPI()
+@app.on_event("startup")
+def startup():
+    Base.metadata.create_all(bind=engine)
+    if not os.path.exists("uploads"):
+        os.makedirs("uploads")
+    db = SessionLocal()
+    try:
+        admin = get_user_by_email(db, "admin@admin.com")
+        if not admin:
+            admin = User(
+                name="admin",
+                email="admin@admin.com",
+                hashed_password=get_password_hash("admin"),
+                age=30,
+                phone="0000000000",
+                role="admin"
+            )
+            db.add(admin)
+            db.commit()
+    except Exception as e:
+        db.rollback()
+        print("Admin seeding error (probably already exists):", e)
+    finally:
+        db.close()
 
 @app.on_event("startup")
 def startup():
