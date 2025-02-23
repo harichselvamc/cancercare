@@ -1,5 +1,5 @@
 fastapi
-bcrypt
+bcrypt==3.2.0
 pydantic[email]
 python-jose
 jose
