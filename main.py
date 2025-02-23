@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Float, Boolean, create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import relationship, Session, declarative_base, sessionmaker
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, timedelta
@@ -147,10 +148,8 @@ class UserOut(BaseModel):
     guardian_phone: Optional[str] = None
     role: str
     class Config:
-         from_attributes = True
+        from_attributes = True
 
-
-# Schemas for profile creation (admin endpoints)
 class PatientProfileCreate(BaseModel):
     blood_group: str
     native_place: str
@@ -174,7 +173,6 @@ class CaregiverProfileCreate(BaseModel):
     experience: int
     price_per_day: float
 
-# Combined creation schemas for admin
 class PatientCreate(BaseModel):
     name: str
     email: EmailStr
@@ -223,8 +221,7 @@ class CancerInfoOut(BaseModel):
     treatment_plan: str
     estimated_cost: float
     class Config:
-         from_attributes = True
-
+        from_attributes = True
 
 class ReminderCreate(BaseModel):
     title: str
@@ -237,8 +234,7 @@ class ReminderOut(BaseModel):
     description: str
     reminder_time: datetime
     class Config:
-         from_attributes = True
-
+        from_attributes = True
 
 class TodoCreate(BaseModel):
     task: str
@@ -248,8 +244,7 @@ class TodoOut(BaseModel):
     task: str
     completed: bool
     class Config:
-          from_attributes = True
-
+        from_attributes = True
 
 class MedicalRecordOut(BaseModel):
     id: int
@@ -259,8 +254,7 @@ class MedicalRecordOut(BaseModel):
     description: str
     upload_time: datetime
     class Config:
-          from_attributes = True
-
+        from_attributes = True
 
 # --------------------
 # Dependency: DB session
@@ -307,7 +301,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 def get_current_active_user(current_user: User = Depends(get_current_user)):
     return current_user
 
-# Modified require_role to allow admin access to all endpoints
 def require_role(role: str):
     def role_checker(current_user: User = Depends(get_current_active_user)):
          if current_user.role == "admin":
@@ -324,7 +317,8 @@ app = FastAPI()
 
 @app.on_event("startup")
 def startup():
-    Base.metadata.create_all(bind=engine)
+    # Create tables if they don't exist.
+    Base.metadata.create_all(bind=engine, checkfirst=True)
     if not os.path.exists("uploads"):
         os.makedirs("uploads")
     db = SessionLocal()
@@ -341,16 +335,15 @@ def startup():
             )
             db.add(admin)
             db.commit()
-    except Exception as e:
+    except IntegrityError as e:
         db.rollback()
-        print("Admin seeding error (probably already exists):", e)
+        print("Admin seeding skipped:", e)
     finally:
         db.close()
 
 # --------------------
 # Login Endpoints
 # --------------------
-# Admin login
 @app.post("/admin/token")
 def admin_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = authenticate_user(db, form_data.username, form_data.password)
@@ -359,7 +352,6 @@ def admin_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     token = create_access_token(data={"sub": user.email})
     return {"access_token": token, "token_type": "bearer"}
 
-# Patient login (using patient id and name)
 @app.post("/patient/token")
 def patient_login(patient_id: int, name: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == patient_id, User.name == name, User.role == "patient").first()
@@ -368,7 +360,6 @@ def patient_login(patient_id: int, name: str, db: Session = Depends(get_db)):
     token = create_access_token(data={"sub": user.email if user.email else f"patient{user.id}"})
     return {"access_token": token, "token_type": "bearer"}
 
-# Doctor login (using doctor id and name)
 @app.post("/doctor/token")
 def doctor_login(doctor_id: int, name: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == doctor_id, User.name == name, User.role == "doctor").first()
@@ -377,7 +368,6 @@ def doctor_login(doctor_id: int, name: str, db: Session = Depends(get_db)):
     token = create_access_token(data={"sub": user.email if user.email else f"doctor{user.id}"})
     return {"access_token": token, "token_type": "bearer"}
 
-# Caregiver login (using caregiver id and name)
 @app.post("/caregiver/token")
 def caregiver_login(caregiver_id: int, name: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == caregiver_id, User.name == name, User.role == "caregiver").first()
@@ -404,9 +394,6 @@ def add_cancer_info(info: CancerInfoCreate, current_user: User = Depends(get_cur
     db.commit()
     db.refresh(cancer_info)
     return cancer_info
-
-# (Other endpoints for reminders, todos, and medical records are assumed to be similar to previous implementations)
-# For brevity, they are not repeated here.
 
 # --------------------
 # Doctor Dashboard Endpoints
@@ -444,7 +431,6 @@ def get_doctor_patients(current_user: User = Depends(require_role("doctor")), db
 # --------------------
 # Admin Dashboard Endpoints
 # --------------------
-# Patient CRUD endpoints
 @app.get("/admin/patients", response_model=List[dict])
 def admin_get_patients(current_user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     patients = db.query(User).filter(User.role == "patient").all()
@@ -525,7 +511,6 @@ def admin_delete_patient(patient_id: int, current_user: User = Depends(require_r
     db.commit()
     return {"detail": "Patient deleted"}
 
-# Doctor CRUD endpoints
 @app.post("/admin/doctors", response_model=dict)
 def admin_create_doctor(doctor: DoctorCreate, current_user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     db_user = get_user_by_email(db, doctor.email)
@@ -565,7 +550,6 @@ def admin_delete_doctor(doctor_id: int, current_user: User = Depends(require_rol
     db.commit()
     return {"detail": "Doctor deleted"}
 
-# Caregiver CRUD endpoints
 @app.post("/admin/caregivers", response_model=dict)
 def admin_create_caregiver(caregiver: CaregiverCreate, current_user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     db_user = get_user_by_email(db, caregiver.email)
@@ -604,7 +588,7 @@ def admin_delete_caregiver(caregiver_id: int, current_user: User = Depends(requi
     db.commit()
     return {"detail": "Caregiver deleted"}
 
-
+# Uncomment below if running with: uvicorn main:app --reload
 # if __name__ == "__main__":
 #     import uvicorn
 #     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
